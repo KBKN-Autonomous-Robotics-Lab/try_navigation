@@ -107,7 +107,7 @@ class ReflectionIntensityMap(Node):
         self.map_data_gl = 0
         self.map_data_gl_flag = 0
         self.MAKE_GL_MAP_FLAG = 0
-        self.save_dir = os.path.expanduser('~/ros2_ws/src/map/tukuba_kakunin')
+        self.save_dir = os.path.expanduser('~/ros2_ws/src/map/new_waypoint_map')
         
     def timer_callback(self):
         if self.map_data_flag > 0:
