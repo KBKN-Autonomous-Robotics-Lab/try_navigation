@@ -56,6 +56,30 @@ def generate_launch_description():
             output='screen',
             arguments=[]
         ),
+        ##ekf odom
+        #Node(package='try_navigation',
+        #    executable='ekf_myself_odom',
+        #    name='sensor_fusion_odom',
+        #    output='screen',
+        #    arguments=[]
+        #),
+        
+        #gps ekf edit
+        #Node(package='try_navigation',
+        #    executable='ekf_myself_match',
+        #    name='sensor_fusion',
+        #    output='screen',
+        #    arguments=[]
+        #),
+        
+        #gps ekf edit
+        Node(package='try_navigation',
+            executable='ekf_myself_gps',
+            name='sensor_fusion',
+            output='screen',
+            arguments=[]
+        ),
+        
         #pcd segmentation
         Node(package='pcd_convert',
             executable='pcd_height_segmentation',
@@ -72,12 +96,12 @@ def generate_launch_description():
         ),
         
         ##waypoint manager
-        Node(package='try_navigation',
-            executable='waypoint_manager_maprun',
-            name='waypoint_manager_maprun_node',
-            output='screen',
-            arguments=[],
-        ),
+        #Node(package='try_navigation',
+        #    executable='waypoint_manager_maprun',
+        #    name='waypoint_manager_maprun_node',
+        #    output='screen',
+        #    arguments=[],
+        #),
         
         #reflection intensity map
         Node(package='try_navigation',
@@ -94,9 +118,16 @@ def generate_launch_description():
             arguments=[],
         ),
         #robot ctrl
-        Node(package='try_navigation',
-            executable='path_follower',
-            name='path_follower_node',
+        #Node(package='try_navigation',
+        #    executable='path_follower',
+        #    name='path_follower_node',
+        #    output='screen',
+        #    arguments=[],
+        #),
+        #path planning
+        Node(package='navigation_control',
+            executable='button',
+            name='button',
             output='screen',
             arguments=[],
         ),

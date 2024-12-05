@@ -59,10 +59,14 @@ class PotentialAStar(Node):
         
         # Subscriptionを作成。CustomMsg型,'/livox/lidar'という名前のtopicをsubscribe。
         self.subscription = self.create_subscription(sensor_msgs.PointCloud2, '/pcd_segment_obs', self.potential_astar, qos_profile)
-        self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_wheel', self.get_odom, qos_profile_sub)
+        #self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_wheel', self.get_odom, qos_profile_sub)
+        #self.subscription = self.create_subscription(nav_msgs.Odometry,'/fusion/odom', self.get_odom, qos_profile_sub)
+        #self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_fast', self.get_odom, qos_profile_sub)
+        self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_ekf_match', self.get_odom, qos_profile_sub)
         self.subscription = self.create_subscription(geometry_msgs.PoseArray,'/current_waypoint', self.get_waypoint, qos_profile_sub)
+        self.subscription = self.create_subscription(sensor_msgs.PointCloud2, '/map_obs', self.get_map_obs, qos_profile)
         self.subscription  # 警告を回避するために設置されているだけです。削除しても挙動はかわりません。
-        self.timer = self.create_timer(0.05, self.timer_callback)
+        #self.timer = self.create_timer(0.05, self.timer_callback)
         
         # Publisherを作成
         self.potential_astar_path_publisher = self.create_publisher(nav_msgs.Path, 'potential_astar_path', qos_profile)
@@ -84,16 +88,28 @@ class PotentialAStar(Node):
         self.cg=20 #ポテンシャルの引力パラメータ
         self.lg=20 #ポテンシャルの引力パラメータ
         self.co=11 #ポテンシャルの斥力パラメータ SICKパラ目：co=11;lo=0.55;
-        self.lo=0.55 #0.5#0.9#ポテンシャルの斥力パラメータ
+        self.lo=0.55#55 #0.5#0.9#ポテンシャルの斥力パラメータ
         self.est_xy = [0,0]#自己位置仮入力
         self.wp_xy = [10,0]#ウェイポイント仮入力
         self.astar_path = [0,10]#ウェイポイント仮入力
-        self.obs_pixel = 100/5#障害物のグリッドサイズ設定
+        self.obs_pixel = 1000/50#障害物のグリッドサイズ設定 
         self.obs_range = 10#障害物情報の範囲
         self.obs_judge = 0#obs_judgeより大きい場合障害物ありと判定する
         
+        
+        self.cg2nd=20 #ポテンシャルの引力パラメータ
+        self.lg2nd=20 #ポテンシャルの引力パラメータ
+        self.co2nd=11 #ポテンシャルの斥力パラメータ SICKパラ目：co=11;lo=0.55;
+        self.lo2nd=0.25#55 #0.5#0.9#ポテンシャルの斥力パラメータ  24/11/29 ok
+        #self.lo2nd=0.30#55 #0.5#0.9#ポテンシャルの斥力パラメータ
+        
+        
+        
         #waypoint
         self.waypoint_xy = np.array([[10],[0],[0]])
+        
+        #map_obs
+        self.map_obs_points = np.array([[],[],[]])
         
     def timer_callback(self):
         #
@@ -143,6 +159,18 @@ class PotentialAStar(Node):
         
         return point_cloud_matrix
         
+    def get_map_obs(self, msg):
+        #print stamp message
+        t_stamp = msg.header.stamp
+        #print(f"t_stamp ={t_stamp}")
+        
+        #get pcd data
+        points = self.pointcloud2_to_array(msg)
+        #print(f"points ={points.shape}")
+        
+        self.map_obs_points = np.vstack((points[0,:], points[1,:], points[2,:]))
+        
+        
     def potential_astar(self, msg):
         
         #print stamp message
@@ -153,13 +181,25 @@ class PotentialAStar(Node):
         points = self.pointcloud2_to_array(msg)
         #print(f"points ={points.shape}")
         
+        #map_obs add
+        if len(self.map_obs_points[0,:])>0:
+            relative_point_x = self.map_obs_points[0,:] - self.position_x
+            relative_point_y = self.map_obs_points[1,:] - self.position_y
+            relative_point = np.array((relative_point_x, relative_point_y, self.map_obs_points[2,:]))
+            relative_point_rot, t_point_rot_matrix = rotation_xyz(relative_point, self.theta_x, self.theta_y, -self.theta_z)
+        else:
+            relative_point_rot = np.array([[],[],[]])
+        
+        
         #obs round&duplicated  :grid_size before:28239 after100:24592 after50:8894 after10:3879
         obs_points = np.vstack((points[0,:], points[1,:], points[2,:]))
+        obs_points = np.insert(obs_points, len(obs_points[0,:]), relative_point_rot.T, axis=1)
         points_round = np.round(obs_points * self.obs_pixel) / self.obs_pixel
         obs_xy_local = points_round[:,~pd.DataFrame({"x":points_round[0,:], "y":points_round[1,:]}).duplicated()]
         obs_xy = np.vstack((obs_xy_local[0,:], obs_xy_local[1,:]))
         
-        reflect_set = points[3,~pd.DataFrame({"x":points_round[0,:], "y":points_round[1,:]}).duplicated()]
+        print(f"obs_points ={obs_points.shape}")
+        reflect_set = obs_points[2,~pd.DataFrame({"x":points_round[0,:], "y":points_round[1,:]}).duplicated()]
         #obs global
         obs_xy_rot, obs_rot_matrix = rotation_xyz(obs_xy_local, self.theta_x, self.theta_y, self.theta_z)
         obs_x_grobal = obs_xy_rot[0,:] + self.position_x
@@ -199,7 +239,11 @@ class PotentialAStar(Node):
         astar_yn = round(len(astar_y)/2)		#%%探索を行うy座標
         astar_xy_find[astar_yn, astar_xn] = 1		#%%初期座標の通過設定
         astar_count = 0							#%%ループ回数チェック用
-	
+        astar_2nd = 0
+        lg=self.lg
+        cg=self.cg
+        lo=self.lo
+        co=self.co
 	
         #■  process : A-star search
         astar_path_x=np.array([astar_xn])
@@ -208,16 +252,19 @@ class PotentialAStar(Node):
         while (astar_xy[astar_xn, astar_yn]>0.1) and ((abs(astar_x[astar_xn]) - self.est_xy[0]) < 9) and ((abs(astar_y[astar_yn]) - self.est_xy[1]) < 9):
             astar_x_search = np.array([astar_x[astar_xn], astar_x[astar_xn-1], astar_x[astar_xn], astar_x[astar_xn+1], astar_x[astar_xn]]) # 探索するx座標[[0, 1, 0],[2, 3, 4],[0, 5, 0]]：0は見ない 1-5の順に十字検索
             astar_y_search = np.array([astar_y[astar_yn-1], astar_y[astar_yn], astar_y[astar_yn], astar_y[astar_yn], astar_y[astar_yn+1]]) # 探索するy座標[[0, 1, 0],[2, 3, 4],[0, 5, 0]]：0は見ない 1-5の順に十字検索
-            astar_ug=self.cg*(1-np.exp(-( (astar_x_search-self.wp_xy[0])**2+(astar_y_search-self.wp_xy[1])**2 )/self.lg**2)) #引力計算
-            obs_short = ( np.abs(obs_xy[0]-astar_x[astar_xn]) + np.abs(obs_xy[1]-astar_y[astar_yn]) ) < 3 # 2　前は2だったけどとりあえずテスト中は5に
+            astar_ug=cg*(1-np.exp(-( (astar_x_search-self.wp_xy[0])**2+(astar_y_search-self.wp_xy[1])**2 )/lg**2)) #引力計算
+            #obs_short = ( np.abs(obs_xy[0]-astar_x[astar_xn]) + np.abs(obs_xy[1]-astar_y[astar_yn]) ) < 3 # 2　前は2だったけどとりあえずテスト中は5に
+            obs_short = np.sqrt((obs_xy[0]-astar_x[astar_xn])**2 + (obs_xy[1]-astar_y[astar_yn])**2 ) < 2 # 2　前は2だったけどとりあえずテスト中は5に
             obs_short_x = obs_xy[0, np.array(obs_short) ]
             obs_short_y = obs_xy[1, np.array(obs_short) ]
-            astar_uo_x = astar_x_search -  obs_xy[0].reshape(len(obs_xy[0]),1) #x-xo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
-            astar_uo_y = astar_y_search -  obs_xy[1].reshape(len(obs_xy[1]),1) #y-yo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
-            astar_uo_x2 = ( astar_uo_x * np.ones([len(obs_xy[0]),len(astar_x_search)]) ) ** 2 #(x-xo)^2
-            astar_uo_y2 = ( astar_uo_y * np.ones([len(obs_xy[1]),len(astar_y_search)]) ) ** 2 #(y-yo)^2
-            astar_uo = sum(self.co * np.exp(- (astar_uo_x2 + astar_uo_y2) / self.lo**2 ) ) # Uo計算 sum{co*e(-((x-xo)^2+(y-yo)^2)/lo^2)}
-            astar_u=(1/self.cg*astar_uo+1)*astar_ug #UgとUoでポテンシャル計算
+            #astar_uo_x = astar_x_search -  obs_xy[0].reshape(len(obs_xy[0]),1) #x-xo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
+            #astar_uo_y = astar_y_search -  obs_xy[1].reshape(len(obs_xy[1]),1) #y-yo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
+            astar_uo_x = astar_x_search -  obs_short_x.reshape(len(obs_short_x),1) #x-xo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
+            astar_uo_y = astar_y_search -  obs_short_y.reshape(len(obs_short_y),1) #y-yo 斥力計算　探索ポイントｘ近場にある障害物を全て行列使って計算
+            astar_uo_x2 = ( astar_uo_x * np.ones([len(obs_short_x),len(astar_x_search)]) ) ** 2 #(x-xo)^2
+            astar_uo_y2 = ( astar_uo_y * np.ones([len(obs_short_y),len(astar_y_search)]) ) ** 2 #(y-yo)^2
+            astar_uo = sum(co * np.exp(- (astar_uo_x2 + astar_uo_y2) / lo**2 ) ) # Uo計算 sum{co*e(-((x-xo)^2+(y-yo)^2)/lo^2)}
+            astar_u=(1/cg*astar_uo+1)*astar_ug #UgとUoでポテンシャル計算
             astar_xy[[astar_xn,astar_xn-1,astar_xn,astar_xn+1,astar_xn],[astar_yn-1,astar_yn,astar_yn,astar_yn,astar_yn+1]] = astar_u #代入
             astar_xymin = astar_xy + (astar_xy_find*500) #一度通過した点を除外
             astar_xymin_ind = np.unravel_index(np.argmin(astar_xymin), astar_xymin.shape) #最もポテンシャルの低い場所のIndexを探す
@@ -231,7 +278,22 @@ class PotentialAStar(Node):
             if astar_xy[astar_yn, astar_xn] <0.2:
                 self.get_logger().info(f"Goal: astar_path_x, astar_path_y ={astar_path_x, astar_path_y}")
                 break
-            if astar_count > 100:
+            if (astar_count > 100) and (astar_2nd==0):
+                astar_x =  np.arange(-9.9, 9.9,  0.3) +self.est_xy[0]	#%%Astarのxを定義
+                astar_y =  np.arange(9.9, -9.9, -0.3) +self.est_xy[1]	#%%Astarのyを定義
+                astar_xy = np.ones([len(astar_x),len(astar_y)])*500     #%%マップを用意 500は暫定？コスト計算のReturnで使ってる？
+                astar_xy_find = np.zeros([len(astar_y),len(astar_x)])	#%%一度通過した箇所を記憶
+                astar_xn = round(len(astar_x)/2)		#%%探索を行うx座標
+                astar_yn = round(len(astar_y)/2)		#%%探索を行うy座標
+                astar_xy_find[astar_yn, astar_xn] = 1		#%%初期座標の通過設定
+                astar_path_x=np.array([astar_xn])
+                astar_path_y=np.array([astar_yn])
+                lg=self.lg2nd
+                cg=self.cg2nd
+                lo=self.lo2nd
+                co=self.co2nd
+                astar_2nd = 1
+            if astar_count >200:
                 self.get_logger().info("Count Break")
                 break
                 
@@ -276,12 +338,20 @@ class PotentialAStar(Node):
 
         astar_interp_x = interpolate.interp1d(astar_dist, astar_path_point_x, kind='linear')
         astar_interp_y = interpolate.interp1d(astar_dist, astar_path_point_y, kind='linear')
-        astar_interp_list = np.linspace(0,astar_dist[len(astar_dist)-1],round(astar_dist[len(astar_dist)-1]/0.5) )
-        astar_path_x = astar_interp_x(astar_interp_list)
-        astar_path_y = astar_interp_y(astar_interp_list)
+        if len(astar_dist) > 0 and not np.isnan(astar_dist[-1]):
+            #astar_interp_list = np.linspace(0,astar_dist[len(astar_dist)-1],round(astar_dist[len(astar_dist)-1]/0.5) )
+            astar_interp_list = np.linspace(0,astar_dist[len(astar_dist)-1],round(astar_dist[len(astar_dist)-1]/0.25) )
+            astar_path_x = astar_interp_x(astar_interp_list)
+            astar_path_y = astar_interp_y(astar_interp_list)
+        else:
+            astar_path_x = [self.est_xy[0]]
+            astar_path_y = [self.est_xy[1]]
         astar_path = np.append(np.append(astar_path_x,self.wp_xy[0]),np.append(astar_path_y,self.wp_xy[1])).reshape(2,len(astar_path_x)+1)
                 
         return astar_path     
+        
+        
+        
         
 def rotation_xyz(pointcloud, theta_x, theta_y, theta_z):
     theta_x = math.radians(theta_x)

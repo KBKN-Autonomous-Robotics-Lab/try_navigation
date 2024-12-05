@@ -24,10 +24,6 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.time import Time
 
-
-from rclpy.action import ActionClient
-from my_msgs.action import StopFlag  # Actionメッセージのインポート
-
 # C++と同じく、Node型を継承します。
 class WaypointManagerMaprun(Node):
     # コンストラクタです、PcdRotationクラスのインスタンスを作成する際に呼び出されます。
@@ -102,15 +98,13 @@ class WaypointManagerMaprun(Node):
         self.ekf_theta_y = 0.0 #[deg]
         self.ekf_theta_z = 0.0 #[deg]
         
-        #match init
+        
+        
         self.odom_x_buff = 0.0
         self.odom_y_buff = 0.0
         self.ref_slam_x_buff = 0.0
         self.ref_slam_y_buff = 0.0
         self.ref_slam_diff = [0.0,0.0,0.0]
-        
-        self.match_buff = [0.0, 0.0, 0.0]
-        self.set_waypoint = [0.0, 0.0, 0.0]
         
         #image angle
         self.angle_offset = 0
@@ -146,14 +140,12 @@ class WaypointManagerMaprun(Node):
         #self.Number_of_satellites = 0
         self.kalf_speed_param = 1.2
         
-        ### gps position init #########
-        self.start_position_init_x = 0.0 #[m]
-        self.start_position_init_y = 0.0 #[m]
+        
         
         # Waypoint YAMLファイルを読み込む
         #Global reflect map load: PGM、JPEG、YAMLファイルを行列形式で読み込み
         #map_base_name = "nakaniwa_test" # 対象画像の名前
-        folder_path = os.path.expanduser('~/ros2_ws/src/map/nakaniwa_1121')
+        folder_path = os.path.expanduser('~/ros2_ws/src/map/nakaniwa_1129')
         map_base_name = "waypoint_map" # 対象画像の名前
         #folder_path = os.path.expanduser('~/ros2_ws/src/map/tukuba_kakunin')
         #folder_path = os.path.expanduser('~/ros2_ws/src/map/tukuba_all')
@@ -183,8 +175,8 @@ class WaypointManagerMaprun(Node):
             #load jpeg
             jpeg_filename = os.path.join(folder_path, f'{map_file_path}_{map_number_str}' + ".jpeg")
             reflect_map_obs = cv2.imread(jpeg_filename)
-            red_judge1 = reflect_map_obs[:,:,0] < 100
-            red_judge2 = reflect_map_obs[:,:,2] > 200
+            red_judge1 = reflect_map_obs[:,:,0] > 200
+            red_judge2 = reflect_map_obs[:,:,2] < 100
             reflect_map_obs_data = red_judge1 * red_judge2 * 100
             reflect_map_obs_matrices.append(reflect_map_obs_data)
             resolution = map_yaml_data['resolution']
@@ -213,7 +205,7 @@ class WaypointManagerMaprun(Node):
         #print(f"self.reflect_map_obs_matrices[0]: {self.reflect_map_obs_matrices[0]}")
         
         wp_x = []; wp_y=[]; wp_z=[];
-        for wp_number in range(self.global_reflect_map_pgm.shape[0]):
+        for wp_number in range(self.global_reflect_map_pgm.shape[0]-1):
             x_offset = (len(self.global_reflect_map_pgm[wp_number][0]) * self.global_reflect_map_resolution[0])/2
             y_offset = (len(self.global_reflect_map_pgm[wp_number][1]) * self.global_reflect_map_resolution[0])/2
             x = self.global_reflect_map_origin[wp_number][0] + x_offset #pgm end + (pgm len * grid)/2
@@ -244,54 +236,6 @@ class WaypointManagerMaprun(Node):
         print(f"self.waypoints ={self.waypoints}")
         print(f"self.waypoints ={self.waypoints.shape}")
         '''
-        
-        
-        
-        self.action_client = ActionClient(self, StopFlag, 'stop_flag')  # ActionClientの設定
-        self.action_sent = False  # アクションが送信されたかを追跡
-        self.stop = False # stopするかの変数(True=stop, False=go)
-        
-        # サーバーにアクションを送信する関数
-    def send_action_request(self):
-        goal_msg = StopFlag.Goal()
-        
-        # stop変数の状態でaの値を決定
-        if self.stop: # True
-            goal_msg.a = 1  # stop
-        else: # False
-            goal_msg.a = 0  # go
-            
-        goal_msg.b = 2  # 任意の値を設定
-
-        # アクションサーバーが利用可能になるまで待機
-        self.action_client.wait_for_server()
-
-        # アクションを非同期で送信
-        self.future = self.action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
-        self.future.add_done_callback(self.response_callback)
-
-    # フィードバックを受け取るコールバック関数
-    def feedback_callback(self, feedback):
-        self.get_logger().info(f"Received feedback: {feedback.feedback.rate}")
-
-    # 結果を受け取るコールバック関数
-    def response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().info("Goal rejected")
-            return
-
-        self.get_logger().info("Goal accepted")
-
-        self.result_future = goal_handle.get_result_async()
-        self.result_future.add_done_callback(self.result_callback)
-
-    # 結果のコールバック
-    def result_callback(self, future):
-        result = future.result().result
-        self.get_logger().info(f"Result: {result.sum}")
-        
-        
     def waypoint_manager(self):
         self.time_stamp = self.get_clock().now().to_msg()
         #self.get_logger().info('waypoint manager cntl')
@@ -320,31 +264,20 @@ class WaypointManagerMaprun(Node):
         waypoint_rad = math.atan2(relative_point_rot[1], relative_point_rot[0])
         waypoint_dist = math.sqrt(relative_point_x**2 + relative_point_y**2)
         waypoint_theta = abs(waypoint_rad * (180 / math.pi))
-        #self.get_logger().info('####### waypoint_theta : %f #######' % (waypoint_theta))
         
         #set judge dist
         if abs(waypoint_theta) > 90:
-            determine_dist = 3.5
+            determine_dist = 6
         else:
-            determine_dist = 3.5
+            determine_dist = 3
         #check if the waypoint reached
         if waypoint_dist < determine_dist:
-            #self.current_waypoint += 1
-            if self.current_waypoint < len(self.waypoints[0,:])-1:
-                self.current_waypoint += 1
-            else:
-                # goal:stopをtrueにしてアクションを再送信
-                self.stop = True
-                self.get_logger().info("Stop flag reset to True")
-                self.send_action_request()
-        
-            #if self.current_waypoint > (len(self.waypoints[0,:]) - 1):
-            #    self.stop_flag = 1
-            #    self.get_logger().info('GOAL : stop_flag = %f' % (self.stop_flag))
+            self.current_waypoint += 1
+            if self.current_waypoint > (len(self.waypoints[0,:]) - 1):
+                self.stop_flag = 1
+                self.get_logger().info('GOAL : stop_flag = %f' % (self.stop_flag))
         #self.get_logger().info('current_waypoint:x = %f, y = %f : waypoint_no = %f' % (self.waypoints[0,self.current_waypoint], self.waypoints[1,self.current_waypoint], self.current_waypoint))
         
-        #buff
-        self.set_waypoint = set_waypoint
         
         #publish
         pose_array = self.current_waypoint_msg(set_waypoint, 'odom')
@@ -390,8 +323,8 @@ class WaypointManagerMaprun(Node):
         
         
     def get_ekf_odom(self, msg):
-        self.ekf_position_x = msg.pose.pose.position.x + self.start_position_init_x
-        self.ekf_position_y = msg.pose.pose.position.y + self.start_position_init_y
+        self.ekf_position_x = msg.pose.pose.position.x
+        self.ekf_position_y = msg.pose.pose.position.y
         self.ekf_position_z = msg.pose.pose.position.z
         
         flio_q_x = msg.pose.pose.orientation.x
@@ -511,7 +444,7 @@ class WaypointManagerMaprun(Node):
         
         if ref_slam_xyz[0] is None :
             print(f"!!xxx noto otu match xxx!!")
-            temp_result_image_set, ref_slam_xyz, match_percentage = self.map_template_match(reflect_map_global_ratio, reflect_map_local_ratio, map_ground_pixel, MAP_RANGE_GL, MAP_RANGE, position_map, 30, 3.5)
+            temp_result_image_set, ref_slam_xyz, match_percentage = self.map_template_match(reflect_map_global_ratio, reflect_map_local_ratio, map_ground_pixel, MAP_RANGE_GL, MAP_RANGE, position_map, 27, 3.5)
             print(f"|| ratio ||| match_percentage:{match_percentage} ")
         
         if ref_slam_xyz[0] is None :
@@ -524,7 +457,7 @@ class WaypointManagerMaprun(Node):
                 reflect_map_local_cut = crop_center(reflect_map_local, 400, 400)
                 reflect_map_local_set_angle = reflect_map_local_cut.astype(np.uint8)
                 reflect_map_local_ratio = cv2.threshold(reflect_map_local_set_angle, threshold_value, 100, cv2.THRESH_BINARY)[1]
-                temp_result_image_set, ref_slam_xyz, match_percentage = self.map_template_match(reflect_map_global_ratio, reflect_map_local_ratio, map_ground_pixel, MAP_RANGE_GL, MAP_RANGE, position_map, 30, 4.5)
+                temp_result_image_set, ref_slam_xyz, match_percentage = self.map_template_match(reflect_map_global_ratio, reflect_map_local_ratio, map_ground_pixel, MAP_RANGE_GL, MAP_RANGE, position_map, 27, 4.5)
                 #print(f" +++++++ set_angle: {set_angle} ++++++++")
                 if ref_slam_xyz[0] is not None :
                     reflect_map_local_set = reflect_map_local_set_angle
@@ -538,9 +471,6 @@ class WaypointManagerMaprun(Node):
         if ref_slam_xyz[0] is not None :
             ref_slam_x = ref_slam_xyz[0]
             ref_slam_y = ref_slam_xyz[1]
-            self.match_buff[0] = ref_slam_x
-            self.match_buff[1] = ref_slam_y
-            map_obs_set = 1
         else:
             #not_match_x = position[0] - self.odom_x_buff
             #not_match_y = position[1] - self.odom_y_buff
@@ -552,7 +482,7 @@ class WaypointManagerMaprun(Node):
             #ref_slam_x = float(self.ref_slam_x_buff + position[0] - self.odom_x_buff)
             #ref_slam_y = float(self.ref_slam_y_buff + position[1] - self.odom_y_buff)
             
-            ##### dead rec #####
+            ##### dead rec
             dist_diff = math.sqrt((position[0] - self.odom_x_buff)**2 + (position[1] - self.odom_y_buff)**2)
             dist_diff_mat = np.vstack((dist_diff, 0.0, 0.0))
             dist_theta = theta_z + self.angle_offset
@@ -563,8 +493,6 @@ class WaypointManagerMaprun(Node):
             print(f"XXXXX NOT Match location XXXXX")
             ref_slam_z = float(0.0)
             ref_slam_xyz = np.array([ref_slam_x, ref_slam_y, ref_slam_z])
-            
-            map_obs_set = 0
                 
         ###### buff set ########    
         self.odom_x_buff = position[0]
@@ -597,14 +525,8 @@ class WaypointManagerMaprun(Node):
         #map_obs = self.rotate_image(map_obs, -self.angle_offset)
         map_obs_index = np.where(map_obs>0)
         if len(map_obs_index[0]) >0:
-            if map_obs_set == 1:
-                ### ekf pos ###
-                map_obs_x =  map_obs_index[1] * resolution - MAP_RANGE_GL + position_map[0] - self.ref_slam_diff[0]
-                map_obs_y = -map_obs_index[0] * resolution + MAP_RANGE_GL + position_map[1] - self.ref_slam_diff[1]
-            else:
-                ### global map pos ###
-                map_obs_x =  map_obs_index[1] * resolution - MAP_RANGE_GL + position_map[0] #- self.ref_slam_diff[0]
-                map_obs_y = -map_obs_index[0] * resolution + MAP_RANGE_GL + position_map[1] #- self.ref_slam_diff[1]
+            map_obs_x =  map_obs_index[1] * resolution - MAP_RANGE_GL + position_map[0] #- self.ref_slam_diff[0]
+            map_obs_y = -map_obs_index[0] * resolution + MAP_RANGE_GL + position_map[1] #- self.ref_slam_diff[1]
             map_obs_z = np.zeros([1,len(map_obs_x)]) 
             map_obs_intensity = np.zeros([1,len(map_obs_x)]) 
             map_obs_matrix = np.vstack((map_obs_x, map_obs_y, map_obs_z, map_obs_intensity))
@@ -622,41 +544,7 @@ class WaypointManagerMaprun(Node):
         self.waypoint_path_publisher.publish(waypoint_path) 
         
         ########## ekf ################
-        # 2点の座標 
-        if self.current_waypoint > 0:
-            before_wpxy = np.array([self.waypoints[0,self.current_waypoint-1], self.waypoints[1,self.current_waypoint-1]])
-        else:
-            before_wpxy = np.array([0,0])
-        next_wpxy = np.array([self.waypoints[0,self.current_waypoint], self.waypoints[1,self.current_waypoint]])
-        # 2点間の距離を計算 
-        wp_distance = np.linalg.norm(next_wpxy - before_wpxy) 
-        # 補間する点の数を計算 
-        wp_num_points = int(wp_distance / 0.25) + 1 
-        # 0.25刻みで点を生成 
-        # 線形補間を実行 
-        wp_line_x = np.linspace(before_wpxy[0], next_wpxy[0], wp_num_points) 
-        wp_line_y = np.linspace(before_wpxy[1], next_wpxy[1], wp_num_points)
-        
-        #match dist
-        wp_line_x_match_diff = wp_line_x - ref_slam_xyz[0]
-        wp_line_y_match_diff = wp_line_y - ref_slam_xyz[1]
-        wp_line_match_diff = np.sqrt(wp_line_x_match_diff**2 + wp_line_y_match_diff**2)
-        wp_line_match_closest_ind = np.argmin(abs(wp_line_match_diff))
-        dist_wpxy_match = wp_line_match_diff[wp_line_match_closest_ind]
-        #gps dist
-        wp_line_x_gps_diff = wp_line_x - self.ekf_position_x
-        wp_line_y_gps_diff = wp_line_y - self.ekf_position_y
-        wp_line_gps_diff = np.sqrt(wp_line_x_gps_diff**2 + wp_line_y_gps_diff**2)
-        wp_line_gps_closest_ind = np.argmin(abs(wp_line_gps_diff))
-        dist_wpxy_gps = wp_line_gps_diff[wp_line_gps_closest_ind]
-        
-        dist_match_diff = math.sqrt( (ref_slam_xyz[0] - self.match_buff[0])**2 + (ref_slam_xyz[1] - self.match_buff[1])**2 )
-        #dist_wpxy_match = math.sqrt( (self.set_waypoint[0] - ref_slam_xyz[0])**2 + (self.set_waypoint[1] - ref_slam_xyz[1])**2 )
-        #dist_wpxy_gps = math.sqrt( (self.set_waypoint[0] - self.ekf_position_x)**2 + (self.set_waypoint[1] - self.ekf_position_y)**2 )
-        if (dist_match_diff > 3.0) and (dist_wpxy_match > dist_wpxy_gps):
-            self.GpsXY =  np.array([self.ekf_position_x, self.ekf_position_y])
-        else :
-            self.GpsXY =  np.array([ref_slam_x, ref_slam_y])
+        self.GpsXY =  np.array([ref_slam_x, ref_slam_y])
         self.robot_yaw = (theta_z+self.angle_offset) /180*math.pi
         
             

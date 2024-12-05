@@ -26,6 +26,9 @@ setup(
         (os.path.join('share', package_name, "launch"), glob('launch/*.launch.py')),
         # Same with the RViz configuration file.
         (os.path.join('share', package_name, "config"), glob('config/*')),
+        # アクションファイルのインストール
+        (os.path.join('share', package_name), glob('action/*.action')),    
+        
     ],
     # setuptoolsを使ってこのパッケージをインストールすることを指定
     install_requires=['setuptools'],
@@ -49,7 +52,11 @@ setup(
             'waypoint_manager = try_navigation.waypoint_manager:main',
             'reflection_intensity_map = try_navigation.reflection_intensity_map:main',
             'odom_wheel = try_navigation.odom_wheel:main',
-            'waypoint_manager_maprun = try_navigation.waypoint_manager_maprun:main'
+            'waypoint_manager_maprun = try_navigation.waypoint_manager_maprun:main',
+            'ekf_myself_match = try_navigation.ekf_myself_match:main',
+            'ekf_myself_gps = try_navigation.ekf_myself_gps:main',
+            'ekf_myself_odom = try_navigation.ekf_myself_odom:main',
+            'map_check = try_navigation.map_check:main'
         ],
     },
 )

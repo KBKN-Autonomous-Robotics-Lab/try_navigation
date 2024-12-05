@@ -24,6 +24,7 @@ import time
 import matplotlib.pyplot
 import struct
 import geometry_msgs.msg as geometry_msgs
+from collections import OrderedDict
 
 from scipy import interpolate
 from std_msgs.msg import Float32MultiArray
@@ -66,6 +67,8 @@ class ReflectionIntensityMap(Node):
         # Subscriptionを作成。CustomMsg型,'/livox/lidar'という名前のtopicをsubscribe。
         self.subscription = self.create_subscription(sensor_msgs.PointCloud2, '/pcd_segment_ground', self.reflect_map, qos_profile)
         self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_wheel', self.get_odom, qos_profile_sub)
+        self.subscription = self.create_subscription(nav_msgs.Odometry,'/fusion/odom', self.get_ekf_odom, qos_profile_sub)
+        #self.subscription = self.create_subscription(nav_msgs.Odometry,'/odom_fast', self.get_odom, qos_profile_sub)
         self.subscription  # 警告を回避するために設置されているだけです。削除しても挙動はかわりません。
         self.timer = self.create_timer(0.1, self.timer_callback)
         
@@ -74,20 +77,27 @@ class ReflectionIntensityMap(Node):
         self.reflect_map_local_publisher = self.create_publisher(OccupancyGrid, 'reflect_map_local', map_qos_profile_sub)
         self.reflect_map_global_publisher = self.create_publisher(OccupancyGrid, 'reflect_map_global', map_qos_profile_sub)
         #パラメータ
-        #mid360 positon init
+        #odom positon init
         self.position_x = 0.0 #[m]
         self.position_y = 0.0 #[m]
         self.position_z = 0.0 #[m]
         self.theta_x = 0.0 #[deg]
         self.theta_y = 0.0 #[deg]
         self.theta_z = 0.0 #[deg]
+        #ekf_odom positon init
+        self.ekf_position_x = 0.0 #[m]
+        self.ekf_position_y = 0.0 #[m]
+        self.ekf_position_z = 0.0 #[m]
+        self.ekf_theta_x = 0.0 #[deg]
+        self.ekf_theta_y = 0.0 #[deg]
+        self.ekf_theta_z = 0.0 #[deg]
         
         #mid360 buff
         self.pcd_ground_buff = np.array([[],[],[],[]]);
         
         #ground 
         self.ground_pixel = 1000/50#障害物のグリッドサイズ設定
-        self.MAP_RANGE = 10.0 #[m]
+        self.MAP_RANGE = 15.0 #[m]
         
         self.MAP_RANGE_GL = 20.0 #[m]
         self.MAP_LIM_X_MIN = -25.0 #[m]
@@ -108,6 +118,8 @@ class ReflectionIntensityMap(Node):
         self.map_data_gl_flag = 0
         self.MAKE_GL_MAP_FLAG = 0
         self.save_dir = os.path.expanduser('~/ros2_ws/src/map/new_waypoint_map')
+        yaml.add_representer(OrderedDict, ordered_dict_representer, Dumper=MyDumper)
+        yaml.add_representer(list, list_representer, Dumper=MyDumper)
         
     def timer_callback(self):
         if self.map_data_flag > 0:
@@ -131,6 +143,22 @@ class ReflectionIntensityMap(Node):
         self.theta_x = 0 #roll /math.pi*180
         self.theta_y = 0 #pitch /math.pi*180
         self.theta_z = yaw /math.pi*180
+        
+    def get_ekf_odom(self, msg):
+        self.ekf_position_x = msg.pose.pose.position.x
+        self.ekf_position_y = msg.pose.pose.position.y
+        self.ekf_position_z = msg.pose.pose.position.z
+        
+        flio_q_x = msg.pose.pose.orientation.x
+        flio_q_y = msg.pose.pose.orientation.y
+        flio_q_z = msg.pose.pose.orientation.z
+        flio_q_w = msg.pose.pose.orientation.w
+        
+        roll, pitch, yaw = quaternion_to_euler(flio_q_x, flio_q_y, flio_q_z, flio_q_w)
+        
+        self.ekf_theta_x = 0 #roll /math.pi*180
+        self.ekf_theta_y = 0 #pitch /math.pi*180
+        self.ekf_theta_z = yaw /math.pi*180
         
 	
     def pointcloud2_to_array(self, cloud_msg):
@@ -156,10 +184,14 @@ class ReflectionIntensityMap(Node):
         points = self.pointcloud2_to_array(msg)
         #print(f"points ={points.shape}")
         
-        #ground global
+        #position set
         position_x=self.position_x; position_y=self.position_y; position_z=self.position_z;
         position = np.array([position_x, position_y, position_z])
         theta_x=self.theta_x; theta_y=self.theta_y; theta_z=self.theta_z;
+        ekf_position_x=self.ekf_position_x; ekf_position_y=self.ekf_position_y; ekf_position_z=self.ekf_position_z;
+        ekf_position = np.array([ekf_position_x, ekf_position_y, ekf_position_z])
+        ekf_theta_x=self.ekf_theta_x; ekf_theta_y=self.ekf_theta_y; ekf_theta_z=self.ekf_theta_z;
+        #ground global
         ground_rot, ground_rot_matrix = rotation_xyz(points[[0,1,2],:], theta_x, theta_y, theta_z)
         ground_x_grobal = ground_rot[0,:] + position_x
         ground_y_grobal = ground_rot[1,:] + position_y
@@ -182,10 +214,22 @@ class ReflectionIntensityMap(Node):
         ground_reflect_conv = self.pcd_ground_buff[3,:]/255*100.0
         map_orientation = np.array([1.0, 0.0, 0.0, 0.0])
         map_data_set = grid_map_set(self.pcd_ground_buff[1,:], self.pcd_ground_buff[0,:], ground_reflect_conv, position, self.ground_pixel, self.MAP_RANGE)
+        ##ekf pos local reflect map
+        ekf_ground_buff_x = self.pcd_ground_buff[0,:] - position[0]
+        ekf_ground_buff_y = self.pcd_ground_buff[1,:] - position[1]
+        ekf_ground_buff_z = self.pcd_ground_buff[2,:] - position[2]
+        ekf_ground_buff = np.vstack((ekf_ground_buff_x, ekf_ground_buff_y, ekf_ground_buff_z))
+        ekf_ground_rot, ekf_ground_rot_matrix = rotation_xyz(ekf_ground_buff, ekf_theta_x-theta_x, ekf_theta_y-theta_y, ekf_theta_z-theta_z)
+        ekf_ground_set_x = ekf_ground_rot[0,:] + ekf_position[0]
+        ekf_ground_set_y = ekf_ground_rot[1,:] + ekf_position[1]
+        ekf_ground_set_z = ekf_ground_rot[2,:] + ekf_position[2]
+        ekf_ground_set = np.vstack((ekf_ground_set_x, ekf_ground_set_y, ekf_ground_set_z))
+        map_data_set_4save = grid_map_set(ekf_ground_set[1,:], ekf_ground_set[0,:], ground_reflect_conv, ekf_position, self.ground_pixel, self.MAP_RANGE)
         print(f"map_data_set ={map_data_set.shape}")
 	
         #GL reflect map
-        map_data_gl_set = grid_map_set(self.pcd_ground_buff[1,:], self.pcd_ground_buff[0,:], ground_reflect_conv, position, self.ground_pixel, self.MAP_RANGE_GL)
+        #map_data_gl_set = grid_map_set(self.pcd_ground_buff[1,:], self.pcd_ground_buff[0,:], ground_reflect_conv, position, self.ground_pixel, self.MAP_RANGE_GL)
+        map_data_gl_set = grid_map_set(ekf_ground_set[1,:], ekf_ground_set[0,:], ground_reflect_conv, ekf_position, self.ground_pixel, self.MAP_RANGE_GL)
         print(f"map_data_set ={map_data_set.shape}")
 	
         
@@ -195,35 +239,75 @@ class ReflectionIntensityMap(Node):
         self.pcd_ground_global_publisher.publish(ground_global_msg) 
         #local map
         self.map_data = make_map_msg(map_data_set, self.ground_pixel, position, map_orientation, t_stamp, self.MAP_RANGE, "odom")
+        #self.map_data = make_map_msg(map_data_set_4save, self.ground_pixel, ekf_position, map_orientation, t_stamp, self.MAP_RANGE, "odom")
         self.map_data_flag = 1
         #self.reflect_map_local_publisher.publish(self.map_data)     
         #gl map
-        self.map_data_gl = make_map_msg(map_data_gl_set, self.ground_pixel, position, map_orientation, t_stamp, self.MAP_RANGE_GL, "odom")
+        self.map_data_gl = make_map_msg(map_data_gl_set, self.ground_pixel, ekf_position, map_orientation, t_stamp, self.MAP_RANGE_GL, "odom")
         #self.reflect_map_global_publisher.publish(self.map_data_gl) 
         self.map_data_gl_flag = 1
         
         if self.MAKE_GL_MAP_FLAG == 1:
-            self.make_ref_map(position_x, position_y, theta_z)
+            #self.make_ref_map(position_x, position_y, theta_z)
+            #self.make_ref_map(ekf_position_x, ekf_position_y, ekf_theta_z)
+            self.make_ref_map(map_data_gl_set, ekf_position_x, ekf_position_y, ekf_theta_z)
         
-    def make_ref_map(self, position_x, position_y, theta_z):
+    def make_ref_map(self, image, position_x, position_y, theta_z):
         map_pos_diff = math.sqrt((position_x - self.map_position_x_buff)**2 + (position_y - self.map_position_y_buff)**2)
         map_theta_diff = abs(theta_z -  self.map_theta_z_buff)
-        if ( (map_pos_diff > 10) or ((map_pos_diff > 1) and (map_theta_diff > 40)) ):
+        if ( (map_pos_diff > 10) or ((map_pos_diff > 2) and (map_theta_diff > 40)) ):
             map_number_str = str(self.map_number).zfill(3)
             # 保存ディレクトリの絶対パスを取得
-            save_path = os.path.join(self.save_dir, f'waypoint_map_{map_number_str}')
+            #save_path = os.path.join(self.save_dir, f'waypoint_map_{map_number_str}')
+            pgm_filename = os.path.join(self.save_dir, f'waypoint_map_{map_number_str}' + ".pgm")
+            pgm_filename_meta = os.path.join(f'waypoint_map_{map_number_str}' + ".pgm")
+            yaml_filename = os.path.join(self.save_dir, f'waypoint_map_{map_number_str}' + ".yaml")
             # ディレクトリが存在するか確認、存在しない場合は作成
             os.makedirs(self.save_dir, exist_ok=True)
-            
+            '''
             subprocess.run([
                 'ros2', 'run', 'nav2_map_server', 'map_saver_cli',
                 '-t', '/reflect_map_global',
-                '--occ', '0.20',
+                '--occ', '0.13',
                 '--free', '0.05',
                 '-f', save_path,
                 '--ros-args', '-p', 'map_subscribe_transient_local:=true', '-r', '__ns:=/namespace'
             ])
             self.get_logger().info(f'External node executed with argument --arg1 {map_number_str}')
+            '''
+            # 閾値の設定 
+            occ_threshold_param = 0.13 # 占有のしきい値  for save
+            occ_threshold = occ_threshold_param * 100 # 占有のしきい値 
+            free_threshold_param = 0.05 # 自由空間のしきい値  for save 
+            free_threshold = free_threshold_param * 100 # 自由空間のしきい値 
+            #image = self.map_data_gl
+            #image = np.array(self.map_data_gl.data).reshape((self.map_data_gl.info.height, self.map_data_gl.info.width))
+            #print(f"image ={image}")
+            # マスクを初期化 
+            occupancy_grid = np.zeros_like(image) 
+            # 占有空間、自由空間、未確定領域を設定 
+            occupancy_grid[image >= occ_threshold] = 255 - 255
+            # 占有空間 
+            occupancy_grid[image <= free_threshold] = 255 - 0
+            # 自由空間 
+            occupancy_grid[(image > free_threshold) & (image < occ_threshold)] = 255 - (image[(image > free_threshold) & (image < occ_threshold)])/occ_threshold*100 # 未確定領域は元の値を保持 
+            # マップの保存 
+            cv2.imwrite(pgm_filename, occupancy_grid)
+            
+            # メタデータを定義 
+            metadata = OrderedDict([ 
+                ('image', pgm_filename_meta), 
+                ('mode', 'trinary'), 
+                ('resolution', 1/self.ground_pixel), 
+                ('origin', [round(position_x - self.MAP_RANGE_GL, 1), round(position_y - self.MAP_RANGE_GL, 1), round(0, 1)]), 
+                ('negate', 0), ('occupied_thresh', occ_threshold_param), 
+                ('free_thresh', free_threshold_param) 
+            ])
+            
+            # YAMLファイルとしてメタデータを保存 
+            with open(yaml_filename, 'w') as yaml_file: 
+                yaml.dump(metadata, yaml_file, Dumper=MyDumper, default_flow_style=False)
+            
             
             self.map_position_x_buff = position_x #[m]
             self.map_position_y_buff = position_y #[m]
@@ -235,6 +319,19 @@ class ReflectionIntensityMap(Node):
         pcd_ind = (( (x_min <= pointcloud[0,:]) * (pointcloud[0,:] <= x_max)) * ((y_min <= pointcloud[1,:]) * (pointcloud[1,:]) <= y_max ) )
         return pcd_ind
 	
+
+# カスタムDumperの設定を追加 
+class MyDumper(yaml.Dumper): 
+    def increase_indent(self, flow=False, indentless=False): 
+        return super(MyDumper, self).increase_indent(flow=flow, indentless=indentless)
+def ordered_dict_representer(dumper, data): 
+    return dumper.represent_dict(data.items()) 
+def list_representer(dumper, data): 
+    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True) 
+    
+
+
+
 def rotation_xyz(pointcloud, theta_x, theta_y, theta_z):
     theta_x = math.radians(theta_x)
     theta_y = math.radians(theta_y)

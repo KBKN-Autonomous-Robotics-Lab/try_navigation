@@ -114,7 +114,16 @@ class OdomWheel(Node):
         
         theta_x = roll *180/math.pi
         theta_y = pitch *180/math.pi
-        theta_z = (yaw + self.yaw_buff) /2 *180/math.pi
+        #theta_z = (yaw + self.yaw_buff) /2 *180/math.pi
+        ##yaw1 =  (yaw*180/math.pi) % 360
+        ##yaw2 =  (self.yaw_buff*180/math.pi) %360
+        ##theta_z = (yaw1 + yaw2) /2
+        ##if theta_z > 180:
+        ##    theta_z = theta_z - 360
+        
+        yaw1 = yaw *180/math.pi
+        yaw2 = self.yaw_buff *180/math.pi
+        theta_z = average_yaw(yaw1, yaw2)
         
         diff_roll = roll - self.roll_buff
         diff_pitch = pitch - self.pitch_buff
@@ -207,7 +216,23 @@ def rotation_xyz(pointcloud, theta_x, theta_y, theta_z):
     #print(f"pointcloud ={pointcloud.shape}")
     rot_pointcloud = rot_matrix.dot(pointcloud)
     return rot_pointcloud, rot_matrix
-
+    
+def average_yaw(yaw1, yaw2): 
+    # 角度をラジアンに変換 
+    yaw1_rad = np.deg2rad(yaw1) 
+    yaw2_rad = np.deg2rad(yaw2) 
+    # sinとcosの値を計算 
+    sin1, cos1 = np.sin(yaw1_rad), np.cos(yaw1_rad) 
+    sin2, cos2 = np.sin(yaw2_rad), np.cos(yaw2_rad) 
+    # sinとcosの平均を計算 
+    sin_avg = (sin1 + sin2) / 2 
+    cos_avg = (cos1 + cos2) / 2 
+    # atan2関数を使用して平均角度を算出 
+    avg_yaw_rad = np.arctan2(sin_avg, cos_avg) 
+    # 平均角度を度に変換 
+    avg_yaw_deg = np.rad2deg(avg_yaw_rad) 
+    
+    return avg_yaw_deg
     
 # mainという名前の関数です。C++のmain関数とは異なり、これは処理の開始地点ではありません。
 def main(args=None):
